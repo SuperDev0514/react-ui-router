@@ -42,8 +42,7 @@
     "url": "https://github.com/ui-router/react.git"
   },
   "dependencies": {
-    "@uirouter/core": "6.0.7",
-    "classnames": "^2.3.1",
+
     "prop-types": "^15.6.1"
   },
   "peerDependencies": {
@@ -65,7 +64,7 @@
     "babel-preset-react": "^6.24.1",
     "bufferutil": "4.0.3",
     "canvas": "2.8.0",
-    "chalk": "^4.0.0",
+    "chalk": "^5.3.0",
     "cross-env": "^7.0.3",
     "husky": "^4.3.6",
     "jest": "27.0.6",
@@ -82,7 +81,7 @@
     "utf-8-validate": "5.0.5",
     "webpack": "^5.46.0",
     "webpack-cli": "^4.7.2",
-    "webpack-dev-server": "^3.9.0"
+    "webpack-dev-server": "^4.15.1"
   },
   "jest": {
     "setupFiles": [
@@ -101,7 +100,7 @@
     ],
     "globals": {
       "ts-jest": {
-        "tsConfig": "./tsconfig.jest.json"
+        "tsconfig": "./tsconfig.jest.json"
       }
     },
     "preset": "ts-jest",
@@ -155,7 +154,7 @@
       {
         "pkg": "@uirouter/core",
         "repo": "https://github.com/ui-router/core",
-        "branch": "master"
+        "branch": "v7"
       }
     ]
   }
