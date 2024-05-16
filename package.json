@@ -42,8 +42,7 @@
     "url": "https://github.com/ui-router/react.git"
   },
   "dependencies": {
-    "@uirouter/core": "6.0.7",
-    "classnames": "^2.3.1",
+
     "prop-types": "^15.6.1"
   },
   "peerDependencies": {
@@ -101,7 +100,7 @@
     ],
     "globals": {
       "ts-jest": {
-        "tsConfig": "./tsconfig.jest.json"
+        "tsconfig": "./tsconfig.jest.json"
       }
     },
     "preset": "ts-jest",
@@ -155,7 +154,7 @@
       {
         "pkg": "@uirouter/core",
         "repo": "https://github.com/ui-router/core",
-        "branch": "master"
+        "branch": "v7"
       }
     ]
   }
