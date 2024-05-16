@@ -1,45 +1,35 @@
 import * as PropTypes from 'prop-types';
 import * as React from 'react';
 import {
+  Component,
   ComponentType,
   ReactNode,
   ValidationMap,
   cloneElement,
   createContext,
   createElement,
+  forwardRef,
   isValidElement,
+  useContext,
   useEffect,
   useMemo,
-  useState,
-  Component,
-  forwardRef,
-  useImperativeHandle,
   useRef,
+  useState,
 } from 'react';
 import {
-  ActiveUIView,
   ResolveContext,
   StateParams,
   Transition,
-  TypedMap,
   UIInjector,
-  ViewConfig,
-  ViewContext,
-  applyPairs,
   UIRouter,
+  UIViewPortalRenderCommand,
+  applyPairs,
 } from '@uirouter/core';
-import { useParentView } from '../hooks/useParentView';
+import { useStableCallback } from '../hooks';
+import { useMountStatusRef } from '../hooks/useMountStatusRef';
 import { useRouter } from '../hooks/useRouter';
 import { ReactViewConfig } from '../reactViews';
-
-/** @internal */
-let viewIdCounter = 0;
-
-/** @internal */
-export interface UIViewAddress {
-  context: ViewContext;
-  fqn: string;
-}
+import { useUiCanExitClassComponentHook } from './hooks/useUiCanExitClassComponent.hook';
 
 /**
  * Interface for [[InjectedProps.resolves]]
@@ -105,9 +95,7 @@ export const TransitionPropCollisionError =
   'Please rename your resolve to avoid conflicts with the router transition.';
 
 /** @internal */
-export const UIViewContext = createContext<UIViewAddress>(undefined);
-/** @deprecated use [[useParentView]] or React.useContext(UIViewContext) */
-export const UIViewConsumer = UIViewContext.Consumer;
+export const ViewIdContext = createContext<string>(undefined);
 
 /** @hidden */
 function useResolvesWithStringTokens(resolveContext: ResolveContext, injector: UIInjector) {
@@ -124,17 +112,29 @@ function useResolvesWithStringTokens(resolveContext: ResolveContext, injector: U
   }, [resolveContext, injector]);
 }
 
-/* @hidden These are the props are passed to the routed component. */
-function useRoutedComponentProps(
+/**
+ * Gets the props passed to the routed component.
+ *
+ * - [[Transition]] object as 'transition'
+ * - Resolve data (resolves with string tokens only)
+ * - classes/styles
+ *
+ * @internal
+ */
+function useContentComponentProps(
+  cmd: UIViewPortalRenderCommand,
   router: UIRouter,
-  stateName: string,
-  viewConfig: ViewConfig,
-  component: React.FunctionComponent<any> | React.ComponentClass<any> | React.ClassicComponentClass<any>,
-  resolves: TypedMap<any> | {},
+  component: React.ComponentType<any>,
   className: string,
-  style: Object,
-  transition: any
+  style: Object
 ): UIViewInjectedProps & { key: string } {
+  const viewConfig = cmd.portalContentType === 'RENDER_ROUTED_VIEW' ? cmd.uiViewPortalRegistration.viewConfig : null;
+  const stateName: string = viewConfig?.viewDecl?.$context?.name;
+  const resolveContext = useMemo(() => (viewConfig ? new ResolveContext(viewConfig.path) : undefined), [viewConfig]);
+  const injector = useMemo(() => resolveContext?.injector(), [resolveContext]);
+  const transition = useMemo(() => injector?.get(Transition), [injector]);
+  const resolves = useResolvesWithStringTokens(resolveContext, injector);
+
   const keyCounterRef = useRef(0);
   // Always re-mount if the viewConfig changes
   const key = useMemo(() => (++keyCounterRef.current).toString(), [viewConfig]);
@@ -160,116 +160,76 @@ function useRoutedComponentProps(
   return useMemo(() => ({ ...baseChildProps, ...maybeRefProp }), [baseChildProps, maybeRefProp]);
 }
 
-/** @hidden */
-function useViewConfig() {
-  const [viewConfig, setViewConfig] = useState<ReactViewConfig>();
-  const viewConfigRef = useRef(viewConfig);
-  viewConfigRef.current = viewConfig;
-  const configUpdated = (newConfig: ViewConfig) => {
-    if (newConfig !== viewConfigRef.current) {
-      setViewConfig(newConfig as ReactViewConfig);
-    }
-  };
-  return { viewConfig, configUpdated };
-}
-
-/** @hidden */
-function useReactHybridApi(ref: React.Ref<unknown>, uiViewData: ActiveUIView, uiViewAddress: UIViewAddress) {
-  const reactHybridApi = useRef({ uiViewData, uiViewAddress });
-  reactHybridApi.current.uiViewData = uiViewData;
-  reactHybridApi.current.uiViewAddress = uiViewAddress;
-  useImperativeHandle(ref, () => reactHybridApi.current);
-}
-
-/**
- * If a class component is being rendered, wire up its uiCanExit method
- * Return a { ref: Ref<ClassComponentInstance> } if passed a component class
- * Return an empty object {} if passed anything else
- * The returned object should be spread as props onto the child component
- * @hidden
- */
-function useUiCanExitClassComponentHook(router: UIRouter, stateName: string, maybeComponentClass: any) {
-  // Use refs and run the callback outside of any render pass
-  const componentInstanceRef = useRef<any>();
-  const deregisterRef = useRef<Function>(() => undefined);
-
-  function callbackRef(componentInstance) {
-    // Use refs
-    const previous = componentInstanceRef.current;
-    const deregisterPreviousTransitionHook = deregisterRef.current;
-
-    if (previous !== componentInstance) {
-      componentInstanceRef.current = componentInstance;
-      deregisterPreviousTransitionHook();
-
-      const uiCanExit = componentInstance?.uiCanExit;
-      if (uiCanExit) {
-        const boundCallback = uiCanExit.bind(componentInstance);
-        deregisterRef.current = router.transitionService.onBefore({ exiting: stateName }, boundCallback);
-      } else {
-        deregisterRef.current = () => undefined;
-      }
-    }
-  }
-
-  return useMemo(() => {
-    const isComponentClass = maybeComponentClass?.prototype?.render || maybeComponentClass?.render;
-    return isComponentClass ? { ref: callbackRef } : undefined;
-  }, [maybeComponentClass]);
+interface ReactViewState {
+  uiViewPortalRenderCommand: UIViewPortalRenderCommand;
+  ContentComponent: React.ComponentType;
 }
 
 const View = forwardRef(function View(props: UIViewProps, forwardedRef) {
   const { children, render, className, style } = props;
 
   const router = useRouter();
-  const parent = useParentView();
-  const creationContext = parent.context;
+  const idRef = useRef(null as string);
+  const parentId = useContext(ViewIdContext);
+  const mountedStatusRef = useMountStatusRef();
 
-  const { viewConfig, configUpdated } = useViewConfig();
-  const component = useMemo(() => viewConfig?.viewDecl?.component, [viewConfig]);
+  const DefaultContentComponent: React.ComponentType = useStableCallback(() => {
+    return isValidElement(children) ? cloneElement(children, childProps) : createElement('div', childProps);
+  });
+  const initialViewState: ReactViewState = {
+    uiViewPortalRenderCommand: { portalContentType: 'RENDER_DEFAULT_CONTENT', uiViewPortalRegistration: null },
+    ContentComponent: DefaultContentComponent,
+  };
+
+  const [reactViewState, setReactViewState] = useState(initialViewState);
+  const { ContentComponent, uiViewPortalRenderCommand } = reactViewState;
 
   const name = props.name || '$default';
-  const fqn = parent.fqn ? parent.fqn + '.' + name : name;
-  const id = useMemo(() => ++viewIdCounter, []);
 
-  // This object contains all the metadata for this UIView
-  const uiViewData: ActiveUIView = useMemo(() => {
-    return { $type: 'react', id, name, fqn, creationContext, configUpdated, config: viewConfig as ViewConfig };
-  }, [id, name, fqn, parent, creationContext, viewConfig]);
-  const viewContext: ViewContext = viewConfig?.viewDecl?.$context;
-  const stateName: string = viewContext?.name;
-  const uiViewAddress: UIViewAddress = { fqn, context: viewContext };
-  const resolveContext = useMemo(() => (viewConfig ? new ResolveContext(viewConfig.path) : undefined), [viewConfig]);
-  const injector = useMemo(() => resolveContext?.injector(), [resolveContext]);
-  const transition = useMemo(() => injector?.get(Transition), [injector]);
-  const resolves = useResolvesWithStringTokens(resolveContext, injector);
+  const renderContentCallback = useStableCallback(function (cmd: UIViewPortalRenderCommand) {
+    if (mountedStatusRef.current === 'UNMOUNTED') {
+      return;
+    }
 
-  const childProps = useRoutedComponentProps(
-    router,
-    stateName,
-    viewConfig,
-    component,
-    resolves,
-    className,
-    style,
-    transition
-  );
+    function getContentComponent() {
+      if (cmd.portalContentType === 'RENDER_ROUTED_VIEW') {
+        return (cmd.uiViewPortalRegistration.viewConfig as ReactViewConfig).viewDecl.component;
+      } else if (cmd.portalContentType === 'RENDER_DEFAULT_CONTENT') {
+        return DefaultContentComponent;
+      } else if (cmd.portalContentType === 'RENDER_INTEROP_DIV') {
+        return () => <div ref={cmd.giveDiv} />;
+      } else {
+        throw new Error(`React UIView does not support the requested command: ${(cmd as any).command}`);
+      }
+    }
 
-  // temporarily expose a ref with an API on it for @uirouter/react-hybrid to use
-  useReactHybridApi(forwardedRef, uiViewData, uiViewAddress);
+    setReactViewState({ uiViewPortalRenderCommand: cmd, ContentComponent: getContentComponent() });
+  });
 
   // Register/deregister any time the uiViewData changes
-  useEffect(() => router.viewService.registerUIView(uiViewData), [uiViewData]);
+  useEffect(() => {
+    idRef.current = router.viewService._pluginapi._registerView('react', parentId, name, renderContentCallback);
 
-  const childElement =
-    !component && isValidElement(children)
-      ? cloneElement(children, childProps)
-      : createElement(component || 'div', childProps);
+    return () => {
+      if (idRef.current) {
+        router.viewService._pluginapi._deregisterView(idRef.current);
+      }
+    };
+  }, [name, parentId, renderContentCallback]);
 
-  // if a render function is passed, use that. otherwise render the component normally
-  const ChildOrRenderFunction =
-    typeof render !== 'undefined' && component ? render(component, childProps) : childElement;
-  return <UIViewContext.Provider value={uiViewAddress}>{ChildOrRenderFunction}</UIViewContext.Provider>;
+  const childProps = useContentComponentProps(uiViewPortalRenderCommand, router, ContentComponent, className, style);
+
+  if (!idRef.current) {
+    return null;
+  }
+
+  return (
+    <ViewIdContext.Provider value={idRef.current}>
+      {typeof render === 'function'
+        ? render(ContentComponent, childProps)
+        : createElement(ContentComponent, childProps)}
+    </ViewIdContext.Provider>
+  );
 });
 
 View.displayName = 'UIView';
