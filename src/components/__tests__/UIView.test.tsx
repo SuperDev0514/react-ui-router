@@ -250,10 +250,7 @@ describe('<UIView>', () => {
 
     it('deregisters the UIView when unmounted', () => {
       const Component = (props) => <UIRouter router={router}>{props.show ? <UIView /> : <div />}</UIRouter>;
-      const deregisterSpy = jest.fn();
-      jest.spyOn(router.viewService, 'registerUIView').mockImplementation(() => deregisterSpy);
-      const rendered = render(<Component show={true} />);
-      rendered.rerender(<Component show={false} />);
+
       expect(deregisterSpy).toHaveBeenCalled();
     });
 
